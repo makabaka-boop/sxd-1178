@@ -279,11 +279,6 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
     }
     const total = db.prepare(countSql).get(...countParams).total;
 
-    const pg = Math.max(1, Number(page) || 1);
-    const ps = Math.min(100, Math.max(1, Number(page_size) || 50));
-    sql += ' LIMIT ? OFFSET ?';
-    params.push(ps, (pg - 1) * ps);
-
     const items = db.prepare(sql).all(...params);
     const enrichedItems = items.map(a => {
       if (a.batch_id) {
@@ -301,12 +296,37 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
       }
       return a;
     });
+    const dynamicOverdueItems = detectUnreturnedOverdue()
+      .filter(a => !alert_type || a.type === alert_type)
+      .filter(a => !severity || a.severity === severity)
+      .filter(() => is_resolved === undefined || is_resolved === 'false' || is_resolved === '0')
+      .map(a => ({
+        id: `dynamic-${a.type}-${a.batch_id}`,
+        alert_type: a.type,
+        severity: a.severity,
+        headphone_id: null,
+        batch_id: a.batch_id,
+        user_id: null,
+        message: a.message,
+        details: a.details,
+        is_resolved: 0,
+        created_at: a.first_issued_at,
+        resolved_at: null,
+        batch_no: a.batch_no,
+        ...a
+      }));
+    const allItems = [...dynamicOverdueItems, ...enrichedItems]
+      .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+    const pg = Math.max(1, Number(page) || 1);
+    const ps = Math.min(100, Math.max(1, Number(page_size) || 50));
+    const totalWithDynamic = total + dynamicOverdueItems.length;
+    const pagedItems = allItems.slice((pg - 1) * ps, pg * ps);
     res.json({
-      items: enrichedItems,
-      total,
+      items: pagedItems,
+      total: totalWithDynamic,
       page: pg,
       page_size: ps,
-      total_pages: Math.ceil(total / ps)
+      total_pages: Math.ceil(totalWithDynamic / ps)
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

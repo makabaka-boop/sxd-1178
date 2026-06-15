@@ -308,14 +308,13 @@ router.post('/:id/followups', authMiddleware, issuerMiddleware, (req, res) => {
       SELECT
         CASE
           WHEN ? IS NOT NULL THEN
-            CASE WHEN JULIANDAY(?) - JULIANDAY(DATE(?)) <= 2 THEN 1 ELSE 0 END
+            CASE WHEN JULIANDAY(DATE(?)) - JULIANDAY(DATE(CURRENT_TIMESTAMP)) <= 2 THEN 1 ELSE 0 END
           ELSE
             CASE WHEN (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(MIN(issued_at))) > 1 THEN 1 ELSE 0 END
         END as is_near_due
       FROM borrow_records
       WHERE batch_id = ? AND returned_at IS NULL
-      LIMIT 1
-    `).get(bb.expected_return_date, bb.expected_return_date, bb.expected_return_date, req.params.id);
+    `).get(bb.expected_return_date, bb.expected_return_date, req.params.id);
 
     if (!nearDue || nearDue.is_near_due !== 1) {
       const msg = bb.expected_return_date
