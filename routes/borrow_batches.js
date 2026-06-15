@@ -304,6 +304,26 @@ router.post('/:id/followups', authMiddleware, issuerMiddleware, (req, res) => {
       return res.status(400).json({ error: '该批次所有耳机已归还，无需催还' });
     }
 
+    const nearDue = db.prepare(`
+      SELECT
+        CASE
+          WHEN ? IS NOT NULL THEN
+            CASE WHEN JULIANDAY(?) - JULIANDAY(DATE(?)) <= 2 THEN 1 ELSE 0 END
+          ELSE
+            CASE WHEN (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(MIN(issued_at))) > 1 THEN 1 ELSE 0 END
+        END as is_near_due
+      FROM borrow_records
+      WHERE batch_id = ? AND returned_at IS NULL
+      LIMIT 1
+    `).get(bb.expected_return_date, bb.expected_return_date, bb.expected_return_date, req.params.id);
+
+    if (!nearDue || nearDue.is_near_due !== 1) {
+      const msg = bb.expected_return_date
+        ? `距离期望归还日（${bb.expected_return_date}）超过2天，暂无需催还`
+        : '批次发出不足1天，暂无需催还';
+      return res.status(400).json({ error: msg });
+    }
+
     const { communication_method, remark, expected_return_date } = req.body;
     if (!communication_method) {
       return res.status(400).json({ error: '沟通方式不能为空' });

@@ -76,47 +76,73 @@ function detectLowBatteryBacklog() {
 }
 
 function detectUnreturnedOverdue() {
-  const overdue = db.prepare(`
-    SELECT br.id as record_id, br.issued_at, bb.id as batch_id, bb.batch_no, bb.expected_return_date,
-      h.serial_no, h.responsible_person,
-      (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) as days_issued,
+  const overdueBatches = db.prepare(`
+    SELECT bb.id as batch_id, bb.batch_no, bb.expected_return_date, bb.purpose,
+      u.real_name as issuer_name,
+      COUNT(br.id) as unreturned_count,
+      MIN(br.issued_at) as first_issued_at,
+      MAX(br.issued_at) as last_issued_at,
+      (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(MIN(br.issued_at))) as max_days_issued,
       (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count,
       (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_at,
       (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_by,
       (SELECT cf.communication_method FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_method,
       (SELECT cf.remark FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_remark,
       (SELECT cf.expected_return_date FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_expected_return
-    FROM borrow_records br
-    JOIN borrow_batches bb ON br.batch_id = bb.id
-    JOIN headphones h ON br.headphone_id = h.id
+    FROM borrow_batches bb
+    JOIN borrow_records br ON bb.id = br.batch_id
+    LEFT JOIN users u ON bb.issuer_id = u.id
     WHERE br.returned_at IS NULL
       AND bb.is_active = 1
       AND (
-        (bb.expected_return_date IS NOT NULL AND DATE(bb.expected_return_date) < DATE(CURRENT_TIMESTAMP))
-        OR (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) > 3
+        (bb.expected_return_date IS NOT NULL AND DATE(bb.expected_return_date) < DATE(CURRENT_TIMESTAMP, '+2 days'))
+        OR (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) > 1
       )
-    ORDER BY days_issued DESC
+    GROUP BY bb.id
+    ORDER BY max_days_issued DESC
   `).all();
 
-  return overdue.map(o => ({
-    type: 'UNRETURNED_OVERDUE',
-    severity: o.days_issued > 7 ? 'high' : 'medium',
-    record_id: o.record_id,
-    batch_id: o.batch_id,
-    batch_no: o.batch_no,
-    serial_no: o.serial_no,
-    responsible_person: o.responsible_person,
-    message: `耳机 ${o.serial_no} 发出后迟迟未回收`,
-    details: `批次 ${o.batch_no}，发出 ${o.days_issued.toFixed(1)} 天，期望归还日 ${o.expected_return_date || '无'}`,
-    days_issued: parseFloat(o.days_issued.toFixed(1)),
-    expected_return_date: o.expected_return_date,
-    followup_count: o.followup_count,
-    last_followup_at: o.last_followup_at,
-    last_followup_by: o.last_followup_by,
-    last_followup_method: o.last_followup_method,
-    last_followup_remark: o.last_followup_remark,
-    last_expected_return: o.last_expected_return
-  }));
+  return overdueBatches.map(o => {
+    const headphones = db.prepare(`
+      SELECT h.id, h.serial_no, h.responsible_person, h.status, br.issued_at,
+        (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) as days_issued
+      FROM borrow_records br
+      JOIN headphones h ON br.headphone_id = h.id
+      WHERE br.batch_id = ? AND br.returned_at IS NULL
+      ORDER BY br.issued_at DESC
+    `).all(o.batch_id);
+
+    const isOverdue = o.expected_return_date
+      ? new Date(o.expected_return_date) < new Date(new Date().toDateString())
+      : o.max_days_issued > 3;
+
+    return {
+      type: 'UNRETURNED_OVERDUE',
+      severity: o.max_days_issued > 7 ? 'high' : (isOverdue ? 'high' : 'medium'),
+      batch_id: o.batch_id,
+      batch_no: o.batch_no,
+      issuer_name: o.issuer_name,
+      purpose: o.purpose,
+      unreturned_count: o.unreturned_count,
+      first_issued_at: o.first_issued_at,
+      last_issued_at: o.last_issued_at,
+      max_days_issued: parseFloat(o.max_days_issued.toFixed(1)),
+      expected_return_date: o.expected_return_date,
+      is_overdue: isOverdue ? 1 : 0,
+      message: `批次 ${o.batch_no} 有 ${o.unreturned_count} 副耳机未归还${isOverdue ? '（已逾期）' : '（临近归还）'}`,
+      details: `最早发出 ${o.max_days_issued.toFixed(1)} 天前，期望归还日 ${o.expected_return_date || '无'}，发放人 ${o.issuer_name || '未知'}`,
+      headphones: headphones.map(h => ({
+        ...h,
+        days_issued: parseFloat(h.days_issued.toFixed(1))
+      })),
+      followup_count: o.followup_count,
+      last_followup_at: o.last_followup_at,
+      last_followup_by: o.last_followup_by,
+      last_followup_method: o.last_followup_method,
+      last_followup_remark: o.last_followup_remark,
+      last_expected_return: o.last_expected_return
+    };
+  });
 }
 
 function detectConsecutiveAuditionAbnormal() {
