@@ -295,10 +295,10 @@ router.get('/dashboard', authMiddleware, issuerMiddleware, (req, res) => {
         bb.id, bb.batch_no,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id) as total_count,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NOT NULL) as returned_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '待处置') as pending_disposal_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '处置中') as disposing_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '已处置') as disposed_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.reviewed_at IS NULL AND br.returned_at IS NOT NULL) as pending_review_count
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '待处置') as pending_disposal_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '处置中') as disposing_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '已处置') as disposed_count,
+        (SELECT COUNT(DISTINCT dr.headphone_id) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status IN ('待处置','处置中')) as pending_review_count
       FROM borrow_batches bb
       WHERE bb.is_active = 1
       ORDER BY bb.created_at DESC

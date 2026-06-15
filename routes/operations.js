@@ -184,6 +184,12 @@ router.post('/review/:record_id', authMiddleware, adminMiddleware, (req, res) =>
     if (!hp) {
       return res.status(404).json({ error: '耳机不存在' });
     }
+    if (hp.status === '待回收核对') {
+      return res.status(400).json({ error: '该耳机处于待回收核对状态，请先通过回收核对流程（check-recycle）处理，无需复核' });
+    }
+    if (hp.status !== '待复核') {
+      return res.status(400).json({ error: `当前耳机状态为「${hp.status}」，仅「待复核」状态耳机可执行复核` });
+    }
 
     const validConclusions = ['恢复可用', '待充电', '停用观察', '返厂维修', '报废'];
     if (disposal_conclusion && !validConclusions.includes(disposal_conclusion)) {
@@ -369,11 +375,43 @@ router.get('/active', authMiddleware, issuerMiddleware, (req, res) => {
   }
 });
 
-module.exports = router;
-
 router.get('/disposal-records', authMiddleware, issuerMiddleware, (req, res) => {
   try {
     const { disposal_status, disposal_type, headphone_id, batch_id, page, page_size } = req.query;
+
+    const conditions = [];
+    const params = [];
+    const countConditions = [];
+    const countParams = [];
+
+    if (disposal_status) {
+      conditions.push(' AND dr.disposal_status = ?');
+      params.push(disposal_status);
+      countConditions.push(' AND disposal_status = ?');
+      countParams.push(disposal_status);
+    }
+    if (disposal_type) {
+      conditions.push(' AND dr.disposal_type = ?');
+      params.push(disposal_type);
+      countConditions.push(' AND disposal_type = ?');
+      countParams.push(disposal_type);
+    }
+    if (headphone_id) {
+      conditions.push(' AND dr.headphone_id = ?');
+      params.push(headphone_id);
+      countConditions.push(' AND headphone_id = ?');
+      countParams.push(headphone_id);
+    }
+    if (batch_id) {
+      conditions.push(' AND dr.batch_id = ?');
+      params.push(batch_id);
+      countConditions.push(' AND batch_id = ?');
+      countParams.push(batch_id);
+    }
+
+    const countSql = `SELECT COUNT(*) as total FROM disposal_records WHERE 1=1${countConditions.join('')}`;
+    const total = db.prepare(countSql).get(...countParams).total;
+
     let sql = `
       SELECT dr.*, h.serial_no, h.content_version, h.status as headphone_status,
         bb.batch_no,
@@ -382,49 +420,9 @@ router.get('/disposal-records', authMiddleware, issuerMiddleware, (req, res) => 
       JOIN headphones h ON dr.headphone_id = h.id
       LEFT JOIN borrow_batches bb ON dr.batch_id = bb.id
       LEFT JOIN users u ON dr.handled_by = u.id
-      WHERE 1=1
+      WHERE 1=1${conditions.join('')}
+      ORDER BY dr.created_at DESC
     `;
-    const params = [];
-    if (disposal_status) {
-      sql += ' AND dr.disposal_status = ?';
-      params.push(disposal_status);
-    }
-    if (disposal_type) {
-      sql += ' AND dr.disposal_type = ?';
-      params.push(disposal_type);
-    }
-    if (headphone_id) {
-      sql += ' AND dr.headphone_id = ?';
-      params.push(headphone_id);
-    }
-    if (batch_id) {
-      sql += ' AND dr.batch_id = ?';
-      params.push(batch_id);
-    }
-    sql += ' ORDER BY dr.created_at DESC';
-
-    const countSql = sql.replace(/SELECT dr\.\*, h\.serial_no.*?WHERE 1=1/, 'SELECT COUNT(*) as total FROM disposal_records dr WHERE 1=1');
-    const countParams = [];
-    if (disposal_status) {
-      countParams.push(disposal_status);
-    }
-    if (disposal_type) {
-      countParams.push(disposal_type);
-    }
-    if (headphone_id) {
-      countParams.push(headphone_id);
-    }
-    if (batch_id) {
-      countParams.push(batch_id);
-    }
-
-    let total = 0;
-    try {
-      total = db.prepare(countSql).get(...countParams).total;
-    } catch (e) {
-      const allItems = db.prepare(sql).all(...params);
-      total = allItems.length;
-    }
 
     const pg = Math.max(1, Number(page) || 1);
     const ps = Math.min(100, Math.max(1, Number(page_size) || 20));
@@ -437,7 +435,7 @@ router.get('/disposal-records', authMiddleware, issuerMiddleware, (req, res) => 
       total,
       page: pg,
       page_size: ps,
-      total_pages: Math.ceil(total / ps)
+      total_pages: Math.ceil(total / ps) || 0
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -514,7 +512,7 @@ router.post('/disposal/:disposal_id/handle', authMiddleware, adminMiddleware, (r
         db.prepare(`
           UPDATE borrow_records
           SET disposal_status = '处置中'
-          WHERE id = ? AND disposal_status = '待处置'
+          WHERE id = ? AND (disposal_status = '待处置' OR disposal_status IS NULL)
         `).run(disposal.borrow_record_id);
       }
 
@@ -557,3 +555,5 @@ router.post('/disposal/:disposal_id/handle', authMiddleware, adminMiddleware, (r
     res.status(500).json({ error: err.message });
   }
 });
+
+module.exports = router;

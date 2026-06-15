@@ -21,10 +21,10 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NULL) as unreturned_count,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NOT NULL) as returned_count,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.audition_result = '异常') as abnormal_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.reviewed_at IS NULL AND br.returned_at IS NOT NULL) as pending_review_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '待处置') as pending_disposal_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '处置中') as disposing_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '已处置') as disposed_count,
+        (SELECT COUNT(DISTINCT dr.headphone_id) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status IN ('待处置','处置中')) as pending_review_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '待处置') as pending_disposal_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '处置中') as disposing_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '已处置') as disposed_count,
         (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count,
         (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_at,
         (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_by,
@@ -102,10 +102,10 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NOT NULL) as returned_count,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NULL) as unreturned_count,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.audition_result = '异常') as abnormal_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.reviewed_at IS NULL AND br.returned_at IS NOT NULL) as pending_review_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '待处置') as pending_disposal_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '处置中') as disposing_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '已处置') as disposed_count
+        (SELECT COUNT(DISTINCT dr.headphone_id) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status IN ('待处置','处置中')) as pending_review_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '待处置') as pending_disposal_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '处置中') as disposing_count,
+        (SELECT COUNT(*) FROM disposal_records dr WHERE dr.batch_id = bb.id AND dr.disposal_status = '已处置') as disposed_count
       FROM borrow_batches bb
       LEFT JOIN users u ON bb.issuer_id = u.id
       WHERE bb.id = ?

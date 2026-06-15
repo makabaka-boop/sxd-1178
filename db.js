@@ -83,7 +83,7 @@ function initDatabase() {
       reviewed_at DATETIME,
       content_version_issued TEXT,
       content_version_return TEXT,
-      disposal_status TEXT DEFAULT '待处置' CHECK (disposal_status IN ('待处置', '处置中', '已处置')),
+      disposal_status TEXT DEFAULT NULL CHECK (disposal_status IN ('待处置', '处置中', '已处置')),
       disposal_conclusion TEXT,
       disposal_liability TEXT,
       disposal_remark TEXT,
