@@ -35,9 +35,10 @@ app.get('/', (req, res) => {
         list: 'GET /api/headphones?content_version&cabinet_position&responsible_person&status&start_date&end_date&min_battery&max_battery',
         get: 'GET /api/headphones/:id',
         create: 'POST /api/headphones (admin)',
-        update: 'PUT /api/headphones/:id (admin)',
-        change_status: 'PUT /api/headphones/:id/status',
+        update: 'PUT /api/headphones/:id (admin, 版本变更自动转「待复核」)',
+        change_status: 'PUT /api/headphones/:id/status (发放员仅能切换停用观察)',
         maintenance: 'POST /api/headphones/:id/maintenance (admin)',
+        review: 'POST /api/headphones/:id/review (admin, 独立复核版本变更/需复核的耳机)',
         delete: 'DELETE /api/headphones/:id (admin)'
       },
       charging_cases: {

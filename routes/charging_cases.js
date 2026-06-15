@@ -133,6 +133,20 @@ router.post('/:id/headphones', authMiddleware, issuerMiddleware, (req, res) => {
     if (alreadyIn) {
       return res.status(400).json({ error: '该耳机已在某个充电盒中' });
     }
+    const inActiveBatch = db.prepare(`
+      SELECT br.id FROM borrow_records br
+      JOIN borrow_batches bb ON br.batch_id = bb.id
+      WHERE br.headphone_id = ? AND bb.is_active = 1 AND br.returned_at IS NULL
+    `).get(headphone_id);
+    if (inActiveBatch) {
+      return res.status(400).json({ error: '该耳机已借出未归还，不能放入充电盒' });
+    }
+    if (hp.status === '使用中') {
+      return res.status(400).json({ error: '该耳机状态为使用中，不能放入充电盒' });
+    }
+    if (!['待充电', '待回收核对', '恢复可用', '待复核', '停用观察'].includes(hp.status)) {
+      return res.status(400).json({ error: `该耳机状态(${hp.status})不允许放入充电盒` });
+    }
     const currentCount = db.prepare(
       'SELECT COUNT(*) as cnt FROM case_headphones WHERE case_id = ? AND removed_at IS NULL'
     ).get(req.params.id).cnt;
@@ -172,12 +186,19 @@ router.delete('/:id/headphones/:headphone_id', authMiddleware, issuerMiddleware,
       WHERE id = ?
     `).run(rel.id);
 
+    const hp = db.prepare('SELECT * FROM headphones WHERE id = ?').get(req.params.headphone_id);
+    let nextStatus = hp.needs_review === 1 ? '待复核' : '恢复可用';
     db.prepare(`
-      UPDATE headphones SET battery_level = 100, updated_at = CURRENT_TIMESTAMP
+      UPDATE headphones SET battery_level = 100, status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(req.params.headphone_id);
+    `).run(nextStatus, req.params.headphone_id);
 
-    res.json({ message: '耳机已取出，电量已充满' });
+    db.prepare(`
+      INSERT INTO status_history (headphone_id, from_status, to_status, changed_by, remark)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(req.params.headphone_id, '待充电', nextStatus, req.user.id, '充电完成，从充电盒取出');
+
+    res.json({ message: `耳机已取出，电量已充满，状态已更新为：${nextStatus}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

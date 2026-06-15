@@ -173,6 +173,8 @@ router.put('/:id', authMiddleware, adminMiddleware, (req, res) => {
       if (content_version !== hp.content_version && hp.content_version) {
         fields.push('needs_review = ?');
         params.push(1);
+        fields.push('status = ?');
+        params.push('待复核');
       }
     }
     if (cabinet_position !== undefined) {
@@ -198,10 +200,30 @@ router.put('/:id', authMiddleware, adminMiddleware, (req, res) => {
     if (fields.length === 0) {
       return res.status(400).json({ error: '未提供需要更新的字段' });
     }
+    const versionChanged = content_version !== undefined
+      && content_version !== hp.content_version
+      && hp.content_version;
+
     fields.push('updated_at = CURRENT_TIMESTAMP');
     params.push(req.params.id);
 
-    db.prepare(`UPDATE headphones SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+    const tx = db.transaction(() => {
+      db.prepare(`UPDATE headphones SET ${fields.join(', ')} WHERE id = ?`).run(...params);
+      if (versionChanged) {
+        db.prepare(`
+          INSERT INTO status_history (headphone_id, from_status, to_status, changed_by, remark)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          req.params.id,
+          hp.status,
+          '待复核',
+          req.user.id,
+          `内容版本由 ${hp.content_version} 更新为 ${content_version}，需复核`
+        );
+      }
+    });
+    tx();
+
     const updated = db.prepare('SELECT * FROM headphones WHERE id = ?').get(req.params.id);
     res.json(updated);
   } catch (err) {
@@ -221,6 +243,41 @@ router.put('/:id/status', authMiddleware, issuerMiddleware, (req, res) => {
     }
     if (hp.status === status) {
       return res.json(hp);
+    }
+
+    if (hp.status === '使用中') {
+      return res.status(400).json({ error: '该耳机处于使用中，必须通过归还流程收回，不能手动修改状态' });
+    }
+    const inActiveBatch = db.prepare(`
+      SELECT br.id FROM borrow_records br
+      JOIN borrow_batches bb ON br.batch_id = bb.id
+      WHERE br.headphone_id = ? AND bb.is_active = 1 AND br.returned_at IS NULL
+    `).get(req.params.id);
+    if (inActiveBatch) {
+      return res.status(400).json({ error: '该耳机在活跃批次中未归还，不能手动修改状态' });
+    }
+
+    if (req.user.role !== 'admin') {
+      const issuerAllowed = [
+        ['待发出', '停用观察'],
+        ['恢复可用', '停用观察'],
+        ['待充电', '停用观察'],
+        ['待回收核对', '停用观察'],
+        ['待复核', '停用观察'],
+        ['停用观察', '待发出'],
+      ];
+      const allowed = issuerAllowed.some(
+        ([from, to]) => from === hp.status && to === status
+      );
+      if (!allowed) {
+        return res.status(403).json({
+          error: `发放人员不允许从「${hp.status}」手动改为「${status}」。请通过对应业务流程操作，或联系管理员。`
+        });
+      }
+    }
+
+    if (hp.needs_review === 1 && ['待发出', '恢复可用'].includes(status)) {
+      return res.status(400).json({ error: '该耳机需要复核，不能直接改为可发出状态。请先完成复核。' });
     }
 
     const tx = db.transaction(() => {
@@ -265,6 +322,49 @@ router.post('/:id/maintenance', authMiddleware, adminMiddleware, (req, res) => {
       LIMIT 1
     `).get(req.params.id);
     res.status(201).json(log);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:id/review', authMiddleware, adminMiddleware, (req, res) => {
+  try {
+    const hp = db.prepare('SELECT * FROM headphones WHERE id = ?').get(req.params.id);
+    if (!hp) {
+      return res.status(404).json({ error: '耳机不存在' });
+    }
+    if (hp.needs_review !== 1 && hp.status !== '待复核') {
+      return res.status(400).json({ error: '该耳机不需要复核' });
+    }
+    const { review_remark } = req.body;
+
+    let nextStatus;
+    if ((hp.battery_level ?? 100) < 50) {
+      nextStatus = '待充电';
+    } else {
+      nextStatus = '恢复可用';
+    }
+
+    const tx = db.transaction(() => {
+      db.prepare(`
+        UPDATE headphones
+        SET status = ?, needs_review = 0, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(nextStatus, req.params.id);
+
+      db.prepare(`
+        INSERT INTO status_history (headphone_id, from_status, to_status, changed_by, remark)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(req.params.id, hp.status, nextStatus, req.user.id, `管理员复核完成：${review_remark || '无备注'}`);
+    });
+    tx();
+
+    const updated = db.prepare('SELECT * FROM headphones WHERE id = ?').get(req.params.id);
+    res.json({
+      message: `复核完成，状态已更新为「${nextStatus}」`,
+      headphone: updated,
+      review_remark: review_remark || null
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
