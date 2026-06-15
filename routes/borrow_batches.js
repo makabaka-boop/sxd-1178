@@ -18,7 +18,13 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
     let sql = `
       SELECT bb.*, u.username as issuer_name, u.real_name as issuer_real_name,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id) as total_count,
-        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NULL) as unreturned_count
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NULL) as unreturned_count,
+        (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count,
+        (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_at,
+        (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_by,
+        (SELECT cf.communication_method FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_method,
+        (SELECT cf.remark FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_remark,
+        (SELECT cf.expected_return_date FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_expected_return
       FROM borrow_batches bb
       LEFT JOIN users u ON bb.issuer_id = u.id
       WHERE 1=1
@@ -38,11 +44,21 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
     }
     sql += ' ORDER BY bb.created_at DESC';
 
-    const countSql = sql.replace(
-      /SELECT bb\.\*, u\.username.*?FROM borrow_batches/,
-      'SELECT COUNT(*) as total FROM borrow_batches bb'
-    ).replace(/LEFT JOIN users u ON bb\.issuer_id = u\.id/, '');
-    const total = db.prepare(countSql).get(...params).total;
+    let countSql = 'SELECT COUNT(*) as total FROM borrow_batches bb WHERE 1=1';
+    const countParams = [];
+    if (is_active !== undefined) {
+      countSql += ' AND bb.is_active = ?';
+      countParams.push(is_active === 'true' || is_active === '1' ? 1 : 0);
+    }
+    if (start_date) {
+      countSql += ' AND DATE(bb.created_at) >= ?';
+      countParams.push(start_date);
+    }
+    if (end_date) {
+      countSql += ' AND DATE(bb.created_at) <= ?';
+      countParams.push(end_date);
+    }
+    const total = db.prepare(countSql).get(...countParams).total;
 
     const pg = Math.max(1, Number(page) || 1);
     const ps = Math.min(100, Math.max(1, Number(page_size) || 20));
@@ -65,7 +81,8 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
 router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
   try {
     const bb = db.prepare(`
-      SELECT bb.*, u.username as issuer_name, u.real_name as issuer_real_name
+      SELECT bb.*, u.username as issuer_name, u.real_name as issuer_real_name,
+        (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count
       FROM borrow_batches bb
       LEFT JOIN users u ON bb.issuer_id = u.id
       WHERE bb.id = ?
@@ -84,7 +101,14 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
       WHERE br.batch_id = ?
       ORDER BY br.issued_at DESC
     `).all(req.params.id);
-    res.json({ ...bb, records });
+    const followups = db.prepare(`
+      SELECT cf.*, u.username as collector_name, u.real_name as collector_real_name
+      FROM collection_followups cf
+      LEFT JOIN users u ON cf.collected_by = u.id
+      WHERE cf.batch_id = ?
+      ORDER BY cf.collected_at DESC
+    `).all(req.params.id);
+    res.json({ ...bb, records, followups });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -239,6 +263,75 @@ router.post('/:id/close', authMiddleware, issuerMiddleware, (req, res) => {
       WHERE bb.id = ?
     `).get(req.params.id);
     res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/:id/followups', authMiddleware, issuerMiddleware, (req, res) => {
+  try {
+    const bb = db.prepare('SELECT id FROM borrow_batches WHERE id = ?').get(req.params.id);
+    if (!bb) {
+      return res.status(404).json({ error: '批次不存在' });
+    }
+    const followups = db.prepare(`
+      SELECT cf.*, u.username as collector_name, u.real_name as collector_real_name
+      FROM collection_followups cf
+      LEFT JOIN users u ON cf.collected_by = u.id
+      WHERE cf.batch_id = ?
+      ORDER BY cf.collected_at DESC
+    `).all(req.params.id);
+    res.json({ total: followups.length, items: followups });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/:id/followups', authMiddleware, issuerMiddleware, (req, res) => {
+  try {
+    const bb = db.prepare('SELECT * FROM borrow_batches WHERE id = ?').get(req.params.id);
+    if (!bb) {
+      return res.status(404).json({ error: '批次不存在' });
+    }
+    if (bb.is_active === 0) {
+      return res.status(400).json({ error: '批次已关闭，不能进行催还登记' });
+    }
+    const unreturned = db.prepare(`
+      SELECT COUNT(*) as cnt FROM borrow_records
+      WHERE batch_id = ? AND returned_at IS NULL
+    `).get(req.params.id).cnt;
+    if (unreturned === 0) {
+      return res.status(400).json({ error: '该批次所有耳机已归还，无需催还' });
+    }
+
+    const { communication_method, remark, expected_return_date } = req.body;
+    if (!communication_method) {
+      return res.status(400).json({ error: '沟通方式不能为空' });
+    }
+    const validMethods = ['电话', '微信', '短信', '邮件', '当面', '其他'];
+    if (!validMethods.includes(communication_method)) {
+      return res.status(400).json({ error: `沟通方式必须是：${validMethods.join('、')}` });
+    }
+
+    const result = db.prepare(`
+      INSERT INTO collection_followups (batch_id, collected_by, communication_method, remark, expected_return_date)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      req.params.id,
+      req.user.id,
+      communication_method,
+      remark || null,
+      expected_return_date || null
+    );
+
+    const followup = db.prepare(`
+      SELECT cf.*, u.username as collector_name, u.real_name as collector_real_name
+      FROM collection_followups cf
+      LEFT JOIN users u ON cf.collected_by = u.id
+      WHERE cf.id = ?
+    `).get(result.lastInsertRowid);
+
+    res.status(201).json(followup);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

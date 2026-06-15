@@ -99,7 +99,14 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
       ORDER BY sh.changed_at DESC
     `).all(req.params.id);
     const records = db.prepare(`
-      SELECT br.*, bb.batch_no, ui.username as issuer_name, ur.username as returner_name, urv.username as reviewer_name
+      SELECT br.*, bb.batch_no, bb.expected_return_date, bb.is_active,
+        ui.username as issuer_name, ur.username as returner_name, urv.username as reviewer_name,
+        (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = br.batch_id) as batch_followup_count,
+        (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_followup_at,
+        (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_followup_by,
+        (SELECT cf.communication_method FROM collection_followups cf WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_followup_method,
+        (SELECT cf.remark FROM collection_followups cf WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_followup_remark,
+        (SELECT cf.expected_return_date FROM collection_followups cf WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_expected_return
       FROM borrow_records br
       LEFT JOIN borrow_batches bb ON br.batch_id = bb.id
       LEFT JOIN users ui ON br.issued_by = ui.id

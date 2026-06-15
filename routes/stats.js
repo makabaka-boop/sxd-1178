@@ -202,8 +202,28 @@ router.get('/dashboard', authMiddleware, issuerMiddleware, (req, res) => {
       SELECT
         (SELECT COUNT(*) FROM borrow_records WHERE DATE(issued_at) = DATE(CURRENT_TIMESTAMP)) as today_issued,
         (SELECT COUNT(*) FROM borrow_records WHERE DATE(returned_at) = DATE(CURRENT_TIMESTAMP)) as today_returned,
-        (SELECT COUNT(*) FROM status_history WHERE DATE(changed_at) = DATE(CURRENT_TIMESTAMP)) as today_status_changes
+        (SELECT COUNT(*) FROM status_history WHERE DATE(changed_at) = DATE(CURRENT_TIMESTAMP)) as today_status_changes,
+        (SELECT COUNT(*) FROM collection_followups WHERE DATE(collected_at) = DATE(CURRENT_TIMESTAMP)) as today_followups
     `).get();
+
+    const overdueUnreturnedBatches = db.prepare(`
+      SELECT COUNT(DISTINCT bb.id) as cnt
+      FROM borrow_batches bb
+      JOIN borrow_records br ON bb.id = br.batch_id
+      WHERE bb.is_active = 1 AND br.returned_at IS NULL
+        AND (
+          (bb.expected_return_date IS NOT NULL AND DATE(bb.expected_return_date) < DATE(CURRENT_TIMESTAMP))
+          OR (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) > 3
+        )
+    `).get().cnt;
+
+    const followedUnreturnedBatches = db.prepare(`
+      SELECT COUNT(DISTINCT bb.id) as cnt
+      FROM borrow_batches bb
+      JOIN borrow_records br ON bb.id = br.batch_id
+      WHERE bb.is_active = 1 AND br.returned_at IS NULL
+        AND EXISTS (SELECT 1 FROM collection_followups cf WHERE cf.batch_id = bb.id)
+    `).get().cnt;
 
     const ownerSummary = db.prepare(`
       SELECT responsible_person,
@@ -235,6 +255,8 @@ router.get('/dashboard', authMiddleware, issuerMiddleware, (req, res) => {
       needs_review_count: needsReviewCount,
       unresolved_alerts: unresolvedAlerts,
       today: todayStats,
+      overdue_unreturned_batches: overdueUnreturnedBatches,
+      followed_unreturned_batches: followedUnreturnedBatches,
       owner_summary: ownerSummary,
       cabinet_summary: cabinetSummary
     });

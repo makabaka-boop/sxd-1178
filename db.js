@@ -129,6 +129,18 @@ function initDatabase() {
       FOREIGN KEY (changed_by) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS collection_followups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      collected_by INTEGER NOT NULL,
+      collected_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      communication_method TEXT NOT NULL DEFAULT '电话',
+      remark TEXT,
+      expected_return_date DATE,
+      FOREIGN KEY (batch_id) REFERENCES borrow_batches(id),
+      FOREIGN KEY (collected_by) REFERENCES users(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_headphones_status ON headphones(status);
     CREATE INDEX IF NOT EXISTS idx_headphones_version ON headphones(content_version);
     CREATE INDEX IF NOT EXISTS idx_headphones_cabinet ON headphones(cabinet_position);
@@ -138,6 +150,9 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_records_issued ON borrow_records(issued_at);
     CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);
     CREATE INDEX IF NOT EXISTS idx_alerts_resolved ON alerts(is_resolved);
+    CREATE INDEX IF NOT EXISTS idx_followups_batch ON collection_followups(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_followups_collected_at ON collection_followups(collected_at);
+    CREATE INDEX IF NOT EXISTS idx_followups_collector ON collection_followups(collected_by);
   `);
 
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;

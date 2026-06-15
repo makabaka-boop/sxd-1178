@@ -51,11 +51,13 @@ app.get('/', (req, res) => {
         delete: 'DELETE /api/charging-cases/:id (admin)'
       },
       borrow_batches: {
-        list: 'GET /api/borrow-batches?is_active&start_date&end_date',
-        get: 'GET /api/borrow-batches/:id',
+        list: 'GET /api/borrow-batches?is_active&start_date&end_date (含催还次数与最近催还信息)',
+        get: 'GET /api/borrow-batches/:id (含借还记录与催还历史)',
         create: 'POST /api/borrow-batches',
         add_headphones: 'POST /api/borrow-batches/:id/add-headphones',
         close: 'POST /api/borrow-batches/:id/close',
+        followups_list: 'GET /api/borrow-batches/:id/followups (催还历史列表)',
+        create_followup: 'POST /api/borrow-batches/:id/followups (登记催还，含沟通方式/备注/预计归还日)',
         delete: 'DELETE /api/borrow-batches/:id (admin)'
       },
       operations: {
@@ -74,7 +76,7 @@ app.get('/', (req, res) => {
         resolve: 'PUT /api/alerts/:id/resolve (admin)'
       },
       stats: {
-        dashboard: 'GET /api/stats/dashboard',
+        dashboard: 'GET /api/stats/dashboard (含今日催还次数、逾期未归还批次、已催还未归还批次等)',
         low_battery_list: 'GET /api/stats/low-battery-list?threshold&cabinet_position&responsible_person',
         version_stats: 'GET /api/stats/version-stats',
         turnover_distribution: 'GET /api/stats/turnover-distribution?start_date&end_date'

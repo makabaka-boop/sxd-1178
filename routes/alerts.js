@@ -77,9 +77,15 @@ function detectLowBatteryBacklog() {
 
 function detectUnreturnedOverdue() {
   const overdue = db.prepare(`
-    SELECT br.id as record_id, br.issued_at, bb.batch_no, bb.expected_return_date,
+    SELECT br.id as record_id, br.issued_at, bb.id as batch_id, bb.batch_no, bb.expected_return_date,
       h.serial_no, h.responsible_person,
-      (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) as days_issued
+      (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(br.issued_at)) as days_issued,
+      (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count,
+      (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_at,
+      (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_by,
+      (SELECT cf.communication_method FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_method,
+      (SELECT cf.remark FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_remark,
+      (SELECT cf.expected_return_date FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_expected_return
     FROM borrow_records br
     JOIN borrow_batches bb ON br.batch_id = bb.id
     JOIN headphones h ON br.headphone_id = h.id
@@ -96,13 +102,20 @@ function detectUnreturnedOverdue() {
     type: 'UNRETURNED_OVERDUE',
     severity: o.days_issued > 7 ? 'high' : 'medium',
     record_id: o.record_id,
+    batch_id: o.batch_id,
     batch_no: o.batch_no,
     serial_no: o.serial_no,
     responsible_person: o.responsible_person,
     message: `耳机 ${o.serial_no} 发出后迟迟未回收`,
     details: `批次 ${o.batch_no}，发出 ${o.days_issued.toFixed(1)} 天，期望归还日 ${o.expected_return_date || '无'}`,
     days_issued: parseFloat(o.days_issued.toFixed(1)),
-    expected_return_date: o.expected_return_date
+    expected_return_date: o.expected_return_date,
+    followup_count: o.followup_count,
+    last_followup_at: o.last_followup_at,
+    last_followup_by: o.last_followup_by,
+    last_followup_method: o.last_followup_method,
+    last_followup_remark: o.last_followup_remark,
+    last_expected_return: o.last_expected_return
   }));
 }
 
@@ -224,13 +237,21 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
     }
     sql += ' ORDER BY a.created_at DESC';
 
-    const countSql = sql.replace(
-      /SELECT a\.\*, h\.serial_no.*?FROM alerts/,
-      'SELECT COUNT(*) as total FROM alerts a'
-    ).replace(/LEFT JOIN headphones h ON a\.headphone_id = h\.id/, '')
-      .replace(/LEFT JOIN borrow_batches bb ON a\.batch_id = bb\.id/, '')
-      .replace(/LEFT JOIN users u ON a\.user_id = u\.id/, '');
-    const total = db.prepare(countSql).get(...params).total;
+    let countSql = 'SELECT COUNT(*) as total FROM alerts a WHERE 1=1';
+    const countParams = [];
+    if (alert_type) {
+      countSql += ' AND a.alert_type = ?';
+      countParams.push(alert_type);
+    }
+    if (severity) {
+      countSql += ' AND a.severity = ?';
+      countParams.push(severity);
+    }
+    if (is_resolved !== undefined) {
+      countSql += ' AND a.is_resolved = ?';
+      countParams.push(is_resolved === 'true' || is_resolved === '1' ? 1 : 0);
+    }
+    const total = db.prepare(countSql).get(...countParams).total;
 
     const pg = Math.max(1, Number(page) || 1);
     const ps = Math.min(100, Math.max(1, Number(page_size) || 50));
@@ -238,8 +259,24 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
     params.push(ps, (pg - 1) * ps);
 
     const items = db.prepare(sql).all(...params);
+    const enrichedItems = items.map(a => {
+      if (a.batch_id) {
+        const followupStats = db.prepare(`
+          SELECT
+            COUNT(*) as followup_count,
+            (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = ? ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_at,
+            (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = ? ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_by,
+            (SELECT cf.communication_method FROM collection_followups cf WHERE cf.batch_id = ? ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_method,
+            (SELECT cf.remark FROM collection_followups cf WHERE cf.batch_id = ? ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_remark,
+            (SELECT cf.expected_return_date FROM collection_followups cf WHERE cf.batch_id = ? ORDER BY cf.collected_at DESC LIMIT 1) as last_expected_return
+          FROM collection_followups cf WHERE cf.batch_id = ?
+        `).get(a.batch_id, a.batch_id, a.batch_id, a.batch_id, a.batch_id, a.batch_id);
+        return { ...a, ...followupStats };
+      }
+      return a;
+    });
     res.json({
-      items,
+      items: enrichedItems,
       total,
       page: pg,
       page_size: ps,
