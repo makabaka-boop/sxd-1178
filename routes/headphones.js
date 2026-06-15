@@ -101,6 +101,7 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
     const records = db.prepare(`
       SELECT br.*, bb.batch_no, bb.expected_return_date, bb.is_active,
         ui.username as issuer_name, ur.username as returner_name, urv.username as reviewer_name,
+        udisp.username as disposer_name, udisp.real_name as disposer_real_name,
         (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = br.batch_id) as batch_followup_count,
         (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_followup_at,
         (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = br.batch_id ORDER BY cf.collected_at DESC LIMIT 1) as batch_last_followup_by,
@@ -112,10 +113,27 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
       LEFT JOIN users ui ON br.issued_by = ui.id
       LEFT JOIN users ur ON br.returned_by = ur.id
       LEFT JOIN users urv ON br.reviewed_by = urv.id
+      LEFT JOIN users udisp ON br.disposed_by = udisp.id
       WHERE br.headphone_id = ?
       ORDER BY br.issued_at DESC
     `).all(req.params.id);
-    res.json({ ...hp, status_history: history, borrow_records: records });
+    const disposalHistory = db.prepare(`
+      SELECT dr.*, bb.batch_no,
+        u.username as handler_name, u.real_name as handler_real_name
+      FROM disposal_records dr
+      LEFT JOIN borrow_batches bb ON dr.batch_id = bb.id
+      LEFT JOIN users u ON dr.handled_by = u.id
+      WHERE dr.headphone_id = ?
+      ORDER BY dr.created_at DESC
+    `).all(req.params.id);
+    const maintenanceHistory = db.prepare(`
+      SELECT ml.*, u.username, u.real_name
+      FROM maintenance_logs ml
+      LEFT JOIN users u ON ml.maintained_by = u.id
+      WHERE ml.headphone_id = ?
+      ORDER BY ml.maintenance_date DESC
+    `).all(req.params.id);
+    res.json({ ...hp, status_history: history, borrow_records: records, disposal_history: disposalHistory, maintenance_history: maintenanceHistory });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

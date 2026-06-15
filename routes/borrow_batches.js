@@ -19,6 +19,12 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
       SELECT bb.*, u.username as issuer_name, u.real_name as issuer_real_name,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id) as total_count,
         (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NULL) as unreturned_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NOT NULL) as returned_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.audition_result = '异常') as abnormal_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.reviewed_at IS NULL AND br.returned_at IS NOT NULL) as pending_review_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '待处置') as pending_disposal_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '处置中') as disposing_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '已处置') as disposed_count,
         (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count,
         (SELECT cf.collected_at FROM collection_followups cf WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_at,
         (SELECT uu.real_name FROM collection_followups cf LEFT JOIN users uu ON cf.collected_by = uu.id WHERE cf.batch_id = bb.id ORDER BY cf.collected_at DESC LIMIT 1) as last_followup_by,
@@ -66,8 +72,17 @@ router.get('/', authMiddleware, issuerMiddleware, (req, res) => {
     params.push(ps, (pg - 1) * ps);
 
     const items = db.prepare(sql).all(...params);
+    const enrichedItems = items.map(item => ({
+      ...item,
+      return_progress: item.total_count > 0
+        ? parseFloat(((item.returned_count / item.total_count) * 100).toFixed(1))
+        : 0,
+      completion_rate: item.total_count > 0 && item.unreturned_count === 0
+        ? 100
+        : (item.total_count > 0 ? parseFloat((((item.total_count - item.unreturned_count) / item.total_count) * 100).toFixed(1)) : 0)
+    }));
     res.json({
-      items,
+      items: enrichedItems,
       total,
       page: pg,
       page_size: ps,
@@ -82,7 +97,15 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
   try {
     const bb = db.prepare(`
       SELECT bb.*, u.username as issuer_name, u.real_name as issuer_real_name,
-        (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count
+        (SELECT COUNT(*) FROM collection_followups cf WHERE cf.batch_id = bb.id) as followup_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id) as total_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NOT NULL) as returned_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NULL) as unreturned_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.audition_result = '异常') as abnormal_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.reviewed_at IS NULL AND br.returned_at IS NOT NULL) as pending_review_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '待处置') as pending_disposal_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '处置中') as disposing_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '已处置') as disposed_count
       FROM borrow_batches bb
       LEFT JOIN users u ON bb.issuer_id = u.id
       WHERE bb.id = ?
@@ -108,7 +131,31 @@ router.get('/:id', authMiddleware, issuerMiddleware, (req, res) => {
       WHERE cf.batch_id = ?
       ORDER BY cf.collected_at DESC
     `).all(req.params.id);
-    res.json({ ...bb, records, followups });
+
+    const disposalRecords = db.prepare(`
+      SELECT dr.*, h.serial_no, u.username as handler_name, u.real_name as handler_real_name
+      FROM disposal_records dr
+      JOIN headphones h ON dr.headphone_id = h.id
+      LEFT JOIN users u ON dr.handled_by = u.id
+      WHERE dr.batch_id = ?
+      ORDER BY dr.created_at DESC
+    `).all(req.params.id);
+
+    const returnProgress = bb.total_count > 0
+      ? parseFloat(((bb.returned_count / bb.total_count) * 100).toFixed(1))
+      : 0;
+    const completionRate = bb.total_count > 0 && bb.unreturned_count === 0
+      ? 100
+      : (bb.total_count > 0 ? parseFloat((((bb.total_count - bb.unreturned_count) / bb.total_count) * 100).toFixed(1)) : 0);
+
+    res.json({
+      ...bb,
+      return_progress: returnProgress,
+      completion_rate: completionRate,
+      records,
+      followups,
+      disposal_records: disposalRecords
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

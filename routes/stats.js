@@ -246,19 +246,99 @@ router.get('/dashboard', authMiddleware, issuerMiddleware, (req, res) => {
       ORDER BY total DESC
     `).all();
 
+    const pendingReviewHeadphones = db.prepare(
+      "SELECT COUNT(*) as cnt FROM headphones WHERE status = '待复核'"
+    ).get().cnt;
+
+    const pendingDisposalCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM disposal_records WHERE disposal_status = '待处置'"
+    ).get().cnt;
+
+    const disposingCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM disposal_records WHERE disposal_status = '处置中'"
+    ).get().cnt;
+
+    const todayDisposedCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM disposal_records WHERE DATE(handled_at) = DATE(CURRENT_TIMESTAMP)"
+    ).get().cnt;
+
+    const todayDisposalCreatedCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM disposal_records WHERE DATE(created_at) = DATE(CURRENT_TIMESTAMP)"
+    ).get().cnt;
+
+    const abnormalDisposalSummary = db.prepare(`
+      SELECT disposal_type, COUNT(*) as count
+      FROM disposal_records
+      GROUP BY disposal_type
+      ORDER BY count DESC
+    `).all();
+
+    const disposalConclusionSummary = db.prepare(`
+      SELECT disposal_conclusion, COUNT(*) as count
+      FROM disposal_records
+      WHERE disposal_conclusion IS NOT NULL
+      GROUP BY disposal_conclusion
+      ORDER BY count DESC
+    `).all();
+
+    const chargingHeadphoneCount = db.prepare(
+      "SELECT COUNT(*) as cnt FROM headphones WHERE status = '待充电'"
+    ).get().cnt;
+
+    const allStatusCounts = {};
+    for (const row of statusSummary) {
+      allStatusCounts[row.status] = row.count;
+    }
+
+    const batchCompletionStats = db.prepare(`
+      SELECT
+        bb.id, bb.batch_no,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id) as total_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.returned_at IS NOT NULL) as returned_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '待处置') as pending_disposal_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '处置中') as disposing_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.disposal_status = '已处置') as disposed_count,
+        (SELECT COUNT(*) FROM borrow_records br WHERE br.batch_id = bb.id AND br.reviewed_at IS NULL AND br.returned_at IS NOT NULL) as pending_review_count
+      FROM borrow_batches bb
+      WHERE bb.is_active = 1
+      ORDER BY bb.created_at DESC
+    `).all().map(b => ({
+      ...b,
+      completion_rate: b.total_count > 0
+        ? parseFloat(((b.returned_count / b.total_count) * 100).toFixed(1))
+        : 0
+    }));
+
+    const overallReturnRate = (() => {
+      const totalRecords = db.prepare('SELECT COUNT(*) as cnt FROM borrow_records WHERE returned_at IS NOT NULL').get().cnt;
+      const totalAll = db.prepare('SELECT COUNT(*) as cnt FROM borrow_records').get().cnt;
+      return totalAll > 0 ? parseFloat(((totalRecords / totalAll) * 100).toFixed(1)) : 0;
+    })();
+
     res.json({
       status_summary: statusSummary,
+      status_counts: allStatusCounts,
       active_batch_count: activeBatchCount,
       unreturned_count: unreturnedCount,
       low_battery_count: lowBatteryCount,
-      pending_review_count: pendingReviewCount,
+      pending_review_count: pendingReviewHeadphones,
       needs_review_count: needsReviewCount,
       unresolved_alerts: unresolvedAlerts,
       today: todayStats,
       overdue_unreturned_batches: overdueUnreturnedBatches,
       followed_unreturned_batches: followedUnreturnedBatches,
       owner_summary: ownerSummary,
-      cabinet_summary: cabinetSummary
+      cabinet_summary: cabinetSummary,
+      pending_disposal_count: pendingDisposalCount,
+      disposing_count: disposingCount,
+      today_returned_count: todayStats.today_returned,
+      today_disposed_count: todayDisposedCount,
+      today_disposal_created_count: todayDisposalCreatedCount,
+      abnormal_disposal_summary: abnormalDisposalSummary,
+      disposal_conclusion_summary: disposalConclusionSummary,
+      charging_headphone_count: chargingHeadphoneCount,
+      batch_completion_stats: batchCompletionStats,
+      overall_return_rate: overallReturnRate
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

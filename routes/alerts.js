@@ -180,12 +180,129 @@ function detectConsecutiveAuditionAbnormal() {
   return issues;
 }
 
+function detectPendingReviewBacklog() {
+  const pendingReviewCount = db.prepare(
+    "SELECT COUNT(*) as cnt FROM headphones WHERE status = '待复核'"
+  ).get().cnt;
+
+  const issues = [];
+  if (pendingReviewCount >= 3) {
+    const pendingItems = db.prepare(`
+      SELECT h.id, h.serial_no, h.status, h.updated_at,
+        (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(h.updated_at)) as days_pending
+      FROM headphones h
+      WHERE h.status = '待复核'
+      ORDER BY h.updated_at ASC
+    `).all();
+
+    const staleItems = pendingItems.filter(p => p.days_pending > 1);
+
+    issues.push({
+      type: 'PENDING_REVIEW_BACKLOG',
+      severity: pendingReviewCount >= 5 ? 'high' : 'medium',
+      pending_count: pendingReviewCount,
+      stale_count: staleItems.length,
+      message: `待复核耳机积压 ${pendingReviewCount} 副${staleItems.length > 0 ? `，其中 ${staleItems.length} 副超过1天未处理` : ''}`,
+      details: `最早待复核时间：${pendingItems[0]?.updated_at || '无'}，涉及耳机：${pendingItems.slice(0, 5).map(p => p.serial_no).join('、')}${pendingItems.length > 5 ? '等' : ''}`,
+      headphones: pendingItems
+    });
+  }
+  return issues;
+}
+
+function detectUnhandledDisposal() {
+  const pendingDisposalCount = db.prepare(
+    "SELECT COUNT(*) as cnt FROM disposal_records WHERE disposal_status = '待处置'"
+  ).get().cnt;
+
+  const issues = [];
+  if (pendingDisposalCount > 0) {
+    const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const staleDisposals = db.prepare(`
+      SELECT dr.*, h.serial_no, bb.batch_no,
+        (JULIANDAY(CURRENT_TIMESTAMP) - JULIANDAY(dr.created_at)) as days_pending
+      FROM disposal_records dr
+      JOIN headphones h ON dr.headphone_id = h.id
+      LEFT JOIN borrow_batches bb ON dr.batch_id = bb.id
+      WHERE dr.disposal_status = '待处置'
+      ORDER BY dr.created_at ASC
+    `).all();
+
+    const over24h = staleDisposals.filter(d => d.days_pending > 1);
+
+    if (over24h.length > 0) {
+      issues.push({
+        type: 'UNHANDLED_DISPOSAL',
+        severity: over24h.length >= 3 ? 'high' : 'medium',
+        pending_count: pendingDisposalCount,
+        stale_count: over24h.length,
+        message: `有 ${over24h.length} 条异常处置记录超过24小时未处理`,
+        details: `共 ${pendingDisposalCount} 条待处置记录，超时涉及：${over24h.slice(0, 5).map(d => d.serial_no + '(' + d.disposal_type + ')').join('、')}`,
+        items: over24h
+      });
+    } else if (pendingDisposalCount >= 3) {
+      issues.push({
+        type: 'UNHANDLED_DISPOSAL',
+        severity: 'low',
+        pending_count: pendingDisposalCount,
+        stale_count: 0,
+        message: `有 ${pendingDisposalCount} 条异常处置记录待处理`,
+        details: `涉及耳机：${staleDisposals.slice(0, 5).map(d => d.serial_no + '(' + d.disposal_type + ')').join('、')}`,
+        items: staleDisposals
+      });
+    }
+  }
+  return issues;
+}
+
+function detectLowBatteryCharging() {
+  const lowBatteryCharging = db.prepare(`
+    SELECT h.id, h.serial_no, h.status, h.battery_level, h.cabinet_position, h.updated_at
+    FROM headphones h
+    WHERE h.status = '待充电' AND h.battery_level IS NOT NULL
+    ORDER BY h.battery_level ASC
+  `).all();
+
+  const lowBatteryReady = db.prepare(`
+    SELECT h.id, h.serial_no, h.status, h.battery_level, h.cabinet_position, h.updated_at
+    FROM headphones h
+    WHERE h.status IN ('待发出', '恢复可用', '待回收核对') AND h.battery_level < 30
+    ORDER BY h.battery_level ASC
+  `).all();
+
+  const issues = [];
+  if (lowBatteryCharging.length > 0) {
+    issues.push({
+      type: 'LOW_BATTERY_CHARGING',
+      severity: lowBatteryCharging.length >= 3 ? 'medium' : 'low',
+      count: lowBatteryCharging.length,
+      message: `${lowBatteryCharging.length} 副耳机处于待充电状态`,
+      details: `平均电量：${Math.round(lowBatteryCharging.reduce((s, h) => s + (h.battery_level || 0), 0) / lowBatteryCharging.length)}%，最低：${lowBatteryCharging[0].battery_level}%`,
+      headphones: lowBatteryCharging
+    });
+  }
+  if (lowBatteryReady.length > 0) {
+    issues.push({
+      type: 'LOW_BATTERY_NEEDS_CHARGING',
+      severity: 'medium',
+      count: lowBatteryReady.length,
+      message: `${lowBatteryReady.length} 副可用/待发出耳机电量低于30%，需要充电`,
+      details: `涉及耳机：${lowBatteryReady.map(h => h.serial_no + '(' + h.battery_level + '%)').join('、')}`,
+      headphones: lowBatteryReady
+    });
+  }
+  return issues;
+}
+
 function runAllChecks() {
   return [
     ...detectVersionMixing(),
     ...detectLowBatteryBacklog(),
     ...detectUnreturnedOverdue(),
-    ...detectConsecutiveAuditionAbnormal()
+    ...detectConsecutiveAuditionAbnormal(),
+    ...detectPendingReviewBacklog(),
+    ...detectUnhandledDisposal(),
+    ...detectLowBatteryCharging()
   ];
 }
 
@@ -231,6 +348,33 @@ router.get('/unreturned-overdue', authMiddleware, issuerMiddleware, (req, res) =
 router.get('/consecutive-abnormal', authMiddleware, issuerMiddleware, (req, res) => {
   try {
     const issues = detectConsecutiveAuditionAbnormal();
+    res.json({ total: issues.length, items: issues });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/pending-review-backlog', authMiddleware, issuerMiddleware, (req, res) => {
+  try {
+    const issues = detectPendingReviewBacklog();
+    res.json({ total: issues.length, items: issues });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/unhandled-disposal', authMiddleware, issuerMiddleware, (req, res) => {
+  try {
+    const issues = detectUnhandledDisposal();
+    res.json({ total: issues.length, items: issues });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/low-battery-charging', authMiddleware, issuerMiddleware, (req, res) => {
+  try {
+    const issues = detectLowBatteryCharging();
     res.json({ total: issues.length, items: issues });
   } catch (err) {
     res.status(500).json({ error: err.message });

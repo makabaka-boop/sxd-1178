@@ -83,11 +83,41 @@ function initDatabase() {
       reviewed_at DATETIME,
       content_version_issued TEXT,
       content_version_return TEXT,
+      disposal_status TEXT DEFAULT '待处置' CHECK (disposal_status IN ('待处置', '处置中', '已处置')),
+      disposal_conclusion TEXT,
+      disposal_liability TEXT,
+      disposal_remark TEXT,
+      disposed_by INTEGER,
+      disposed_at DATETIME,
       FOREIGN KEY (headphone_id) REFERENCES headphones(id),
       FOREIGN KEY (batch_id) REFERENCES borrow_batches(id),
       FOREIGN KEY (issued_by) REFERENCES users(id),
       FOREIGN KEY (returned_by) REFERENCES users(id),
-      FOREIGN KEY (reviewed_by) REFERENCES users(id)
+      FOREIGN KEY (reviewed_by) REFERENCES users(id),
+      FOREIGN KEY (disposed_by) REFERENCES users(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS disposal_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      borrow_record_id INTEGER NOT NULL,
+      headphone_id INTEGER NOT NULL,
+      batch_id INTEGER NOT NULL,
+      disposal_type TEXT NOT NULL CHECK (disposal_type IN (
+        '版本不一致', '试听异常', '耳罩损坏', '低电量', '内容问题', '其他异常'
+      )),
+      disposal_status TEXT NOT NULL DEFAULT '待处置' CHECK (disposal_status IN ('待处置', '处置中', '已处置')),
+      disposal_conclusion TEXT CHECK (disposal_conclusion IN ('恢复可用', '待充电', '停用观察', '返厂维修', '报废')),
+      disposal_liability TEXT,
+      disposal_remark TEXT,
+      result_status TEXT NOT NULL DEFAULT '待复核' CHECK (result_status IN ('待复核', '恢复可用', '待充电', '停用观察')),
+      handled_by INTEGER,
+      handled_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (borrow_record_id) REFERENCES borrow_records(id),
+      FOREIGN KEY (headphone_id) REFERENCES headphones(id),
+      FOREIGN KEY (batch_id) REFERENCES borrow_batches(id),
+      FOREIGN KEY (handled_by) REFERENCES users(id)
     );
 
     CREATE TABLE IF NOT EXISTS maintenance_logs (
@@ -153,6 +183,11 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_followups_batch ON collection_followups(batch_id);
     CREATE INDEX IF NOT EXISTS idx_followups_collected_at ON collection_followups(collected_at);
     CREATE INDEX IF NOT EXISTS idx_followups_collector ON collection_followups(collected_by);
+    CREATE INDEX IF NOT EXISTS idx_disposal_record_id ON disposal_records(borrow_record_id);
+    CREATE INDEX IF NOT EXISTS idx_disposal_headphone ON disposal_records(headphone_id);
+    CREATE INDEX IF NOT EXISTS idx_disposal_batch ON disposal_records(batch_id);
+    CREATE INDEX IF NOT EXISTS idx_disposal_status ON disposal_records(disposal_status);
+    CREATE INDEX IF NOT EXISTS idx_borrow_disposal_status ON borrow_records(disposal_status);
   `);
 
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;

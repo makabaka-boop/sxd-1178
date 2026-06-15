@@ -51,8 +51,8 @@ app.get('/', (req, res) => {
         delete: 'DELETE /api/charging-cases/:id (admin)'
       },
       borrow_batches: {
-        list: 'GET /api/borrow-batches?is_active&start_date&end_date (含催还次数与最近催还信息)',
-        get: 'GET /api/borrow-batches/:id (含借还记录与催还历史)',
+        list: 'GET /api/borrow-batches?is_active&start_date&end_date (含归还进度/异常数量/待复核/待处置汇总)',
+        get: 'GET /api/borrow-batches/:id (含借还记录/催还历史/处置记录/完成率)',
         create: 'POST /api/borrow-batches',
         add_headphones: 'POST /api/borrow-batches/:id/add-headphones',
         close: 'POST /api/borrow-batches/:id/close',
@@ -62,9 +62,11 @@ app.get('/', (req, res) => {
       },
       operations: {
         active_records: 'GET /api/operations/active',
-        return: 'POST /api/operations/return/:record_id',
-        review: 'POST /api/operations/review/:record_id (admin)',
-        check_recycle: 'POST /api/operations/check-recycle'
+        return: 'POST /api/operations/return/:record_id (归还时自动生成处置记录)',
+        review: 'POST /api/operations/review/:record_id (admin, 含处置结论/责任归属/处置备注)',
+        check_recycle: 'POST /api/operations/check-recycle',
+        disposal_records: 'GET /api/operations/disposal-records?disposal_status&disposal_type&headphone_id&batch_id',
+        handle_disposal: 'POST /api/operations/disposal/:disposal_id/handle (admin, 提交处置结果并流转耳机状态)'
       },
       alerts: {
         list: 'GET /api/alerts?alert_type&severity&is_resolved',
@@ -73,10 +75,13 @@ app.get('/', (req, res) => {
         low_battery_backlog: 'GET /api/alerts/low-battery-backlog',
         unreturned_overdue: 'GET /api/alerts/unreturned-overdue',
         consecutive_abnormal: 'GET /api/alerts/consecutive-abnormal',
+        pending_review_backlog: 'GET /api/alerts/pending-review-backlog (待复核积压)',
+        unhandled_disposal: 'GET /api/alerts/unhandled-disposal (异常未处理)',
+        low_battery_charging: 'GET /api/alerts/low-battery-charging (低电量待充电)',
         resolve: 'PUT /api/alerts/:id/resolve (admin)'
       },
       stats: {
-        dashboard: 'GET /api/stats/dashboard (含今日催还次数、逾期未归还批次、已催还未归还批次等)',
+        dashboard: 'GET /api/stats/dashboard (含今日归还/待复核/异常处置/批次完成率/各状态耳机数等闭环汇总)',
         low_battery_list: 'GET /api/stats/low-battery-list?threshold&cabinet_position&responsible_person',
         version_stats: 'GET /api/stats/version-stats',
         turnover_distribution: 'GET /api/stats/turnover-distribution?start_date&end_date'
